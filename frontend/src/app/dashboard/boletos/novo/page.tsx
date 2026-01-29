@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -41,7 +41,7 @@ const regrasTributacao: Record<string, { nome: string; pis: number; cofins: numb
   ORGAO_FEDERAL: { nome: "Órgãos Públicos Federais", pis: 0.65, cofins: 3.0, csll: 1.0, ir: 4.8, icon: Landmark },
 }
 
-export default function NovoBoletoPage() {
+function NovoBoletoForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const clienteIdParam = searchParams.get("clienteId")
@@ -722,5 +722,17 @@ export default function NovoBoletoPage() {
         </div>
       </form>
     </div>
+  )
+}
+
+export default function NovoBoletoPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    }>
+      <NovoBoletoForm />
+    </Suspense>
   )
 }
