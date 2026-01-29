@@ -1,0 +1,177 @@
+# ============================================================================
+# KAMINOCLONE - ALERTMANAGER CONFIGURATION
+# ============================================================================
+
+global:
+  # Configuração SMTP para emails
+  smtp_smarthost: 'smtp.gmail.com:587'
+  smtp_from: 'alertmanager@kamino.io'
+  smtp_auth_username: '${SMTP_USERNAME}'
+  smtp_auth_password: '${SMTP_PASSWORD}'
+  
+  # Configuração Slack
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+  
+  # Timeouts
+  resolve_timeout: 5m
+
+# Templates customizados
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Roteamento de alertas
+route:
+  # Rota padrão
+  receiver: 'slack-notifications'
+  group_by: ['alertname', 'service', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  
+  # Rotas específicas por severidade
+  routes:
+    # Alertas críticos - notificar imediatamente via PagerDuty/Slack
+    - match:
+        severity: critical
+      receiver: 'pagerduty-critical'
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: true
+    
+    - match:
+        severity: critical
+      receiver: 'slack-critical'
+      group_wait: 10s
+    
+    # Alertas de página (on-call)
+    - match:
+        severity: page
+      receiver: 'pagerduty-critical'
+      group_wait: 0s
+      repeat_interval: 30m
+    
+    # Alertas de warning
+    - match:
+        severity: warning
+      receiver: 'slack-warnings'
+      group_wait: 1m
+      repeat_interval: 4h
+    
+    # Alertas de fraude - equipe específica
+    - match_re:
+        alertname: 'Fraud.*'
+      receiver: 'fraud-team'
+      group_wait: 10s
+      repeat_interval: 1h
+    
+    # Alertas de infraestrutura
+    - match_re:
+        alertname: '(ServiceDown|HighMemoryUsage|HighCPUUsage).*'
+      receiver: 'infra-team'
+      group_wait: 30s
+    
+    # Alertas de banco de dados
+    - match_re:
+        alertname: '(Postgres|Redis|Kafka).*'
+      receiver: 'database-team'
+      group_wait: 30s
+
+# Inibição de alertas (evitar spam)
+inhibit_rules:
+  # Se o serviço está down, não alertar sobre latência alta
+  - source_match:
+      alertname: 'ServiceDown'
+    target_match:
+      alertname: 'HighLatencyP95'
+    equal: ['service']
+  
+  # Se há crítico, não enviar warning do mesmo alerta
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname']
+  
+  # Se Kafka está down, não alertar sobre consumer lag
+  - source_match:
+      alertname: 'KafkaBrokerDown'
+    target_match:
+      alertname: 'KafkaConsumerLag'
+
+# Receivers (destinos dos alertas)
+receivers:
+  # Slack geral
+  - name: 'slack-notifications'
+    slack_configs:
+      - channel: '#kamino-alerts'
+        send_resolved: true
+        title: '{{ template "slack.title" . }}'
+        text: '{{ template "slack.text" . }}'
+        color: '{{ if eq .Status "firing" }}{{ if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}{{ else }}good{{ end }}'
+  
+  # Slack para alertas críticos
+  - name: 'slack-critical'
+    slack_configs:
+      - channel: '#kamino-critical'
+        send_resolved: true
+        title: '🚨 CRITICAL: {{ .CommonLabels.alertname }}'
+        text: |
+          *Status:* {{ .Status | toUpper }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Service:* {{ .CommonLabels.service }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          *Runbook:* {{ .CommonAnnotations.runbook_url }}
+        color: 'danger'
+  
+  # Slack para warnings
+  - name: 'slack-warnings'
+    slack_configs:
+      - channel: '#kamino-warnings'
+        send_resolved: true
+        title: '⚠️ WARNING: {{ .CommonLabels.alertname }}'
+        text: |
+          *Status:* {{ .Status }}
+          *Service:* {{ .CommonLabels.service }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+        color: 'warning'
+  
+  # PagerDuty para críticos
+  - name: 'pagerduty-critical'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
+        send_resolved: true
+        severity: 'critical'
+        description: '{{ .CommonAnnotations.summary }}'
+        details:
+          alertname: '{{ .CommonLabels.alertname }}'
+          service: '{{ .CommonLabels.service }}'
+          severity: '{{ .CommonLabels.severity }}'
+          description: '{{ .CommonAnnotations.description }}'
+          runbook: '{{ .CommonAnnotations.runbook_url }}'
+  
+  # Equipe de fraude
+  - name: 'fraud-team'
+    slack_configs:
+      - channel: '#fraud-alerts'
+        send_resolved: true
+        title: '🔴 FRAUD ALERT: {{ .CommonLabels.alertname }}'
+        color: 'danger'
+    email_configs:
+      - to: 'fraud-team@kamino.io'
+        send_resolved: true
+  
+  # Equipe de infraestrutura
+  - name: 'infra-team'
+    slack_configs:
+      - channel: '#infra-alerts'
+        send_resolved: true
+  
+  # Equipe de banco de dados
+  - name: 'database-team'
+    slack_configs:
+      - channel: '#database-alerts'
+        send_resolved: true
+    email_configs:
+      - to: 'dba-team@kamino.io'
+        send_resolved: true

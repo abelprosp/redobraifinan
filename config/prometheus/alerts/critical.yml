@@ -1,0 +1,281 @@
+# ============================================================================
+# KAMINOCLONE - ALERTAS CRÍTICOS
+# ============================================================================
+
+groups:
+  - name: critical_alerts
+    rules:
+      # =======================================================================
+      # ALERTAS DE INFRAESTRUTURA
+      # =======================================================================
+      
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Serviço {{ $labels.job }} está offline"
+          description: "O serviço {{ $labels.job }} ({{ $labels.instance }}) está offline há mais de 1 minuto."
+          runbook_url: "https://runbooks.kamino.io/service-down"
+
+      - alert: HighMemoryUsage
+        expr: (container_memory_usage_bytes / container_spec_memory_limit_bytes) > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alto uso de memória em {{ $labels.container_name }}"
+          description: "Container {{ $labels.container_name }} está usando {{ $value | humanizePercentage }} da memória alocada."
+
+      - alert: HighCPUUsage
+        expr: rate(container_cpu_usage_seconds_total[5m]) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alto uso de CPU em {{ $labels.container_name }}"
+          description: "Container {{ $labels.container_name }} está com uso elevado de CPU."
+
+      # =======================================================================
+      # ALERTAS DE BANCO DE DADOS
+      # =======================================================================
+
+      - alert: PostgresConnectionsHigh
+        expr: pg_stat_activity_count > 180
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Muitas conexões PostgreSQL"
+          description: "PostgreSQL tem {{ $value }} conexões ativas (limite: 200)."
+          runbook_url: "https://runbooks.kamino.io/postgres-connections"
+
+      - alert: PostgresReplicationLag
+        expr: pg_replication_lag > 30
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Lag de replicação PostgreSQL"
+          description: "Replicação do PostgreSQL está com {{ $value }}s de atraso."
+
+      - alert: PostgresDiskSpace
+        expr: pg_database_size_bytes / 1024 / 1024 / 1024 > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Banco de dados PostgreSQL grande"
+          description: "Database {{ $labels.datname }} tem {{ $value | humanize }}GB."
+
+      # =======================================================================
+      # ALERTAS DE KAFKA
+      # =======================================================================
+
+      - alert: KafkaConsumerLag
+        expr: kafka_consumer_group_lag > 10000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Consumer lag alto no Kafka"
+          description: "Consumer group {{ $labels.consumergroup }} tem lag de {{ $value }} mensagens no tópico {{ $labels.topic }}."
+          runbook_url: "https://runbooks.kamino.io/kafka-lag"
+
+      - alert: KafkaBrokerDown
+        expr: kafka_brokers < 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Broker Kafka offline"
+          description: "Nenhum broker Kafka disponível."
+
+      - alert: KafkaUnderReplicatedPartitions
+        expr: kafka_topic_partition_under_replicated_partition > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Partições sub-replicadas no Kafka"
+          description: "Tópico {{ $labels.topic }} tem {{ $value }} partições sub-replicadas."
+
+      # =======================================================================
+      # ALERTAS DE REDIS
+      # =======================================================================
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis offline"
+          description: "Instância Redis {{ $labels.instance }} está offline."
+
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Memória Redis alta"
+          description: "Redis está usando {{ $value | humanizePercentage }} da memória máxima."
+
+      - alert: RedisTooManyConnections
+        expr: redis_connected_clients > 500
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Muitas conexões Redis"
+          description: "Redis tem {{ $value }} conexões ativas."
+
+      # =======================================================================
+      # ALERTAS DE APLICAÇÃO
+      # =======================================================================
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+          /
+          sum(rate(http_requests_total[5m])) by (service) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Taxa de erro alta em {{ $labels.service }}"
+          description: "Serviço {{ $labels.service }} tem taxa de erro de {{ $value | humanizePercentage }}."
+          runbook_url: "https://runbooks.kamino.io/high-error-rate"
+
+      - alert: HighLatencyP95
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latência P95 alta em {{ $labels.service }}"
+          description: "P95 de latência em {{ $labels.service }} é {{ $value | humanizeDuration }}."
+
+      - alert: HighLatencyP99
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Latência P99 crítica em {{ $labels.service }}"
+          description: "P99 de latência em {{ $labels.service }} é {{ $value | humanizeDuration }}."
+
+      # =======================================================================
+      # ALERTAS DE TRANSAÇÕES/PAGAMENTOS
+      # =======================================================================
+
+      - alert: TransactionVolumeDropped
+        expr: |
+          sum(rate(transactions_total[5m])) 
+          < 
+          (sum(rate(transactions_total[5m] offset 1h)) * 0.5)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Volume de transações caiu drasticamente"
+          description: "Volume atual está 50% abaixo do volume de 1 hora atrás."
+          runbook_url: "https://runbooks.kamino.io/transaction-volume-drop"
+
+      - alert: PaymentFailureRateHigh
+        expr: |
+          sum(rate(payments_total{status="failed"}[5m]))
+          /
+          sum(rate(payments_total[5m])) > 0.1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Taxa de falha de pagamentos alta"
+          description: "{{ $value | humanizePercentage }} dos pagamentos estão falhando."
+          runbook_url: "https://runbooks.kamino.io/payment-failures"
+
+      - alert: CardDeclineRateHigh
+        expr: |
+          sum(rate(card_transactions_total{status="declined"}[15m]))
+          /
+          sum(rate(card_transactions_total[15m])) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taxa de recusa de cartões elevada"
+          description: "{{ $value | humanizePercentage }} das transações de cartão estão sendo recusadas."
+
+      # =======================================================================
+      # ALERTAS DE INTEGRAÇÃO
+      # =======================================================================
+
+      - alert: ExternalProviderDown
+        expr: probe_success{job="blackbox"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Provider externo {{ $labels.instance }} offline"
+          description: "Não foi possível conectar ao provider {{ $labels.instance }}."
+          runbook_url: "https://runbooks.kamino.io/provider-failover"
+
+      - alert: ExternalProviderLatencyHigh
+        expr: probe_duration_seconds{job="blackbox"} > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latência alta com provider {{ $labels.instance }}"
+          description: "Latência de {{ $value | humanizeDuration }} para {{ $labels.instance }}."
+
+      # =======================================================================
+      # ALERTAS DE FRAUDE
+      # =======================================================================
+
+      - alert: FraudScoreAnomaly
+        expr: avg(fraud_score) > 0.7
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Score de fraude anômalo"
+          description: "Score médio de fraude está em {{ $value }}."
+          runbook_url: "https://runbooks.kamino.io/fraud-anomaly"
+
+      - alert: HighFraudBlockRate
+        expr: |
+          sum(rate(fraud_decisions_total{decision="block"}[15m]))
+          /
+          sum(rate(fraud_decisions_total[15m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taxa de bloqueio por fraude elevada"
+          description: "{{ $value | humanizePercentage }} das transações estão sendo bloqueadas por fraude."
+
+      # =======================================================================
+      # ALERTAS DE SEGURANÇA
+      # =======================================================================
+
+      - alert: TooManyFailedLogins
+        expr: sum(rate(login_attempts_total{status="failed"}[5m])) by (ip) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Muitas tentativas de login falharam"
+          description: "IP {{ $labels.ip }} teve {{ $value }} falhas de login por segundo."
+
+      - alert: SSLCertificateExpiringSoon
+        expr: probe_ssl_earliest_cert_expiry - time() < 86400 * 14
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Certificado SSL expirando"
+          description: "Certificado de {{ $labels.instance }} expira em menos de 14 dias."

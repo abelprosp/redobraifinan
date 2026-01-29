@@ -1,0 +1,465 @@
+// ============================================================================
+// REDOBRAI FINAN - PRISMA SCHEMA
+// Conexão com PostgreSQL
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum TipoPessoa {
+  PF
+  PJ
+}
+
+enum StatusCliente {
+  ATIVO
+  INATIVO
+  PENDENTE
+  BLOQUEADO
+}
+
+enum StatusBoleto {
+  PENDENTE
+  PAGO
+  VENCIDO
+  CANCELADO
+  PROTESTADO
+  BAIXADO
+}
+
+enum TipoCobranca {
+  NORMAL
+  HIBRIDO
+}
+
+enum EspecieDocumento {
+  DUPLICATA_MERCANTIL_INDICACAO
+  DUPLICATA_RURAL
+  NOTA_PROMISSORIA
+  NOTA_PROMISSORIA_RURAL
+  NOTA_SEGUROS
+  RECIBO
+  LETRA_CAMBIO
+  NOTA_DEBITO
+  DUPLICATA_SERVICO_INDICACAO
+  OUTROS
+  BOLETO_PROPOSTA
+  CARTAO_CREDITO
+}
+
+enum TipoTransacao {
+  ENTRADA
+  SAIDA
+  TRANSFERENCIA
+}
+
+enum StatusTransacao {
+  PENDENTE
+  CONCLUIDA
+  CANCELADA
+  ESTORNADA
+}
+
+enum UserRole {
+  ADMIN
+  USER
+  VIEWER
+}
+
+// ============================================================================
+// MODELS - AUTENTICAÇÃO
+// ============================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  passwordHash  String    @map("password_hash")
+  role          UserRole  @default(USER)
+  avatar        String?
+  emailVerified DateTime? @map("email_verified")
+  isActive      Boolean   @default(true) @map("is_active")
+  
+  // Relações
+  companyId     String?   @map("company_id")
+  company       Company?  @relation(fields: [companyId], references: [id])
+  
+  // Timestamps
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  lastLoginAt   DateTime? @map("last_login_at")
+  
+  // Relações inversas
+  sessions      Session[]
+  auditLogs     AuditLog[]
+  
+  @@map("users")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token        String   @unique
+  expiresAt    DateTime @map("expires_at")
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  createdAt    DateTime @default(now()) @map("created_at")
+  
+  @@map("sessions")
+}
+
+// ============================================================================
+// MODELS - EMPRESA
+// ============================================================================
+
+model Company {
+  id              String   @id @default(cuid())
+  name            String
+  tradeName       String?  @map("trade_name")
+  document        String   @unique // CNPJ
+  email           String
+  phone           String?
+  
+  // Endereço
+  addressStreet   String?  @map("address_street")
+  addressNumber   String?  @map("address_number")
+  addressComplement String? @map("address_complement")
+  addressNeighborhood String? @map("address_neighborhood")
+  addressCity     String?  @map("address_city")
+  addressState    String?  @map("address_state")
+  addressZipCode  String?  @map("address_zip_code")
+  
+  // Configurações Sicredi
+  sicrediApiKey         String?  @map("sicredi_api_key")
+  sicrediUsername       String?  @map("sicredi_username")
+  sicrediPassword       String?  @map("sicredi_password")
+  sicrediCooperativa    String?  @map("sicredi_cooperativa")
+  sicrediPosto          String?  @map("sicredi_posto")
+  sicrediCodigoBeneficiario String? @map("sicredi_codigo_beneficiario")
+  sicrediEnvironment    String?  @default("sandbox") @map("sicredi_environment")
+  
+  // Timestamps
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  
+  // Relações
+  users           User[]
+  clientes        Cliente[]
+  contas          Conta[]
+  boletos         Boleto[]
+  transacoes      Transacao[]
+  
+  @@map("companies")
+}
+
+// ============================================================================
+// MODELS - CLIENTES
+// ============================================================================
+
+model Cliente {
+  id            String        @id @default(cuid())
+  companyId     String        @map("company_id")
+  company       Company       @relation(fields: [companyId], references: [id])
+  
+  // Dados básicos
+  tipoPessoa    TipoPessoa    @map("tipo_pessoa")
+  documento     String        // CPF ou CNPJ
+  nome          String
+  nomeFantasia  String?       @map("nome_fantasia")
+  email         String?
+  telefone      String?
+  celular       String?
+  
+  // Endereço
+  endereco      String?
+  numero        String?
+  complemento   String?
+  bairro        String?
+  cidade        String?
+  uf            String?
+  cep           String?
+  
+  // Status e controle
+  status        StatusCliente @default(PENDENTE)
+  observacoes   String?
+  
+  // Tributação (para cálculo de retenções)
+  tipoTributacao String?      @map("tipo_tributacao") // SEM_RETENCAO, PJ_PRIVADA, SIMPLES_ORGAO_ME, ORGAO_FEDERAL
+  
+  // Timestamps
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  
+  // Relações
+  boletos       Boleto[]
+  transacoes    Transacao[]
+  
+  @@unique([companyId, documento])
+  @@index([companyId])
+  @@index([documento])
+  @@index([status])
+  @@map("clientes")
+}
+
+// ============================================================================
+// MODELS - CONTAS
+// ============================================================================
+
+model Conta {
+  id            String   @id @default(cuid())
+  companyId     String   @map("company_id")
+  company       Company  @relation(fields: [companyId], references: [id])
+  
+  nome          String
+  descricao     String?
+  tipo          String   // corrente, poupanca, caixa, etc
+  saldo         Decimal  @default(0) @db.Decimal(15, 2)
+  
+  // Dados bancários (opcional)
+  banco         String?
+  agencia       String?
+  numeroConta   String?  @map("numero_conta")
+  
+  isActive      Boolean  @default(true) @map("is_active")
+  
+  // Timestamps
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  
+  // Relações
+  transacoesOrigem  Transacao[] @relation("ContaOrigem")
+  transacoesDestino Transacao[] @relation("ContaDestino")
+  
+  @@index([companyId])
+  @@map("contas")
+}
+
+// ============================================================================
+// MODELS - BOLETOS
+// ============================================================================
+
+model Boleto {
+  id                String           @id @default(cuid())
+  companyId         String           @map("company_id")
+  company           Company          @relation(fields: [companyId], references: [id])
+  clienteId         String           @map("cliente_id")
+  cliente           Cliente          @relation(fields: [clienteId], references: [id])
+  
+  // Identificadores
+  nossoNumero       String?          @map("nosso_numero")
+  seuNumero         String?          @map("seu_numero")
+  linhaDigitavel    String?          @map("linha_digitavel")
+  codigoBarras      String?          @map("codigo_barras")
+  
+  // Dados do boleto
+  tipoCobranca      TipoCobranca     @default(HIBRIDO) @map("tipo_cobranca")
+  especieDocumento  EspecieDocumento @default(DUPLICATA_SERVICO_INDICACAO) @map("especie_documento")
+  valor             Decimal          @db.Decimal(15, 2)
+  valorPago         Decimal?         @map("valor_pago") @db.Decimal(15, 2)
+  
+  // Datas
+  dataEmissao       DateTime         @default(now()) @map("data_emissao")
+  dataVencimento    DateTime         @map("data_vencimento")
+  dataPagamento     DateTime?        @map("data_pagamento")
+  
+  // Juros, multa e desconto
+  tipoJuros         String?          @map("tipo_juros") // VALOR ou PERCENTUAL
+  juros             Decimal?         @db.Decimal(15, 4)
+  multa             Decimal?         @db.Decimal(15, 4)
+  desconto1         Decimal?         @db.Decimal(15, 2)
+  dataDesconto1     DateTime?        @map("data_desconto_1")
+  desconto2         Decimal?         @db.Decimal(15, 2)
+  dataDesconto2     DateTime?        @map("data_desconto_2")
+  
+  // PIX (boleto híbrido)
+  txId              String?          @map("tx_id")
+  qrCode            String?          @map("qr_code") @db.Text
+  
+  // Status
+  status            StatusBoleto     @default(PENDENTE)
+  
+  // Mensagens
+  mensagem1         String?
+  mensagem2         String?
+  mensagem3         String?
+  mensagem4         String?
+  
+  // Sicredi
+  sicrediCooperativa String?         @map("sicredi_cooperativa")
+  sicrediPosto       String?         @map("sicredi_posto")
+  
+  // Timestamps
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+  
+  // Relações
+  transacao         Transacao?
+  
+  @@index([companyId])
+  @@index([clienteId])
+  @@index([status])
+  @@index([dataVencimento])
+  @@index([nossoNumero])
+  @@map("boletos")
+}
+
+// ============================================================================
+// MODELS - TRANSAÇÕES
+// ============================================================================
+
+model Transacao {
+  id            String          @id @default(cuid())
+  companyId     String          @map("company_id")
+  company       Company         @relation(fields: [companyId], references: [id])
+  
+  // Tipo e status
+  tipo          TipoTransacao
+  status        StatusTransacao @default(PENDENTE)
+  
+  // Valores
+  valor         Decimal         @db.Decimal(15, 2)
+  descricao     String?
+  
+  // Referências
+  clienteId     String?         @map("cliente_id")
+  cliente       Cliente?        @relation(fields: [clienteId], references: [id])
+  
+  contaOrigemId String?         @map("conta_origem_id")
+  contaOrigem   Conta?          @relation("ContaOrigem", fields: [contaOrigemId], references: [id])
+  
+  contaDestinoId String?        @map("conta_destino_id")
+  contaDestino   Conta?         @relation("ContaDestino", fields: [contaDestinoId], references: [id])
+  
+  boletoId      String?         @unique @map("boleto_id")
+  boleto        Boleto?         @relation(fields: [boletoId], references: [id])
+  
+  // Forma de pagamento
+  formaPagamento String?        @map("forma_pagamento") // PIX, BOLETO, TED, etc
+  
+  // Timestamps
+  dataTransacao DateTime        @default(now()) @map("data_transacao")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+  
+  @@index([companyId])
+  @@index([clienteId])
+  @@index([tipo])
+  @@index([status])
+  @@index([dataTransacao])
+  @@map("transacoes")
+}
+
+// ============================================================================
+// MODELS - AUDIT LOG
+// ============================================================================
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?  @map("user_id")
+  user        User?    @relation(fields: [userId], references: [id])
+  
+  action      String   // CREATE, UPDATE, DELETE, LOGIN, etc
+  entity      String   // boleto, cliente, etc
+  entityId    String?  @map("entity_id")
+  
+  oldData     Json?    @map("old_data")
+  newData     Json?    @map("new_data")
+  
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  @@index([userId])
+  @@index([entity])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================================================
+// MODELS - WEBHOOKS LOG
+// ============================================================================
+
+model WebhookLog {
+  id          String   @id @default(cuid())
+  provider    String   // sicredi, stripe, etc
+  event       String   // payment.received, etc
+  payload     Json
+  status      String   // received, processed, failed
+  error       String?
+  processedAt DateTime? @map("processed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  @@index([provider])
+  @@index([event])
+  @@index([createdAt])
+  @@map("webhook_logs")
+}
+
+// ============================================================================
+// MODELS - INTEGRAÇÕES BANCÁRIAS
+// ============================================================================
+
+model IntegracaoBancaria {
+  id          String   @id @default(cuid())
+  companyId   String   @map("company_id")
+  
+  // Identificação
+  provider    String   // sicredi, sicoob, itau, bradesco, etc
+  nome        String   // Nome amigável
+  
+  // Status
+  isActive    Boolean  @default(false) @map("is_active")
+  environment String   @default("sandbox") // sandbox ou production
+  
+  // Credenciais (criptografadas)
+  clientId          String?  @map("client_id")
+  clientSecret      String?  @map("client_secret")
+  apiKey            String?  @map("api_key")
+  username          String?
+  password          String?
+  
+  // Dados específicos do banco
+  cooperativa       String?
+  agencia           String?
+  conta             String?
+  posto             String?
+  codigoBeneficiario String? @map("codigo_beneficiario")
+  numeroContrato    String?  @map("numero_contrato")
+  
+  // PIX
+  chavePix          String?  @map("chave_pix")
+  
+  // Certificados (paths)
+  certPath          String?  @map("cert_path")
+  keyPath           String?  @map("key_path")
+  
+  // Webhook
+  webhookUrl        String?  @map("webhook_url")
+  webhookSecret     String?  @map("webhook_secret")
+  
+  // Status de conexão
+  lastConnectionAt  DateTime? @map("last_connection_at")
+  lastConnectionStatus String? @map("last_connection_status") // success, error
+  lastError         String?   @map("last_error")
+  
+  // Timestamps
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  @@unique([companyId, provider])
+  @@index([companyId])
+  @@index([provider])
+  @@map("integracoes_bancarias")
+}

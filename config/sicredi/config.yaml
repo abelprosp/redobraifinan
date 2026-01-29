@@ -1,0 +1,108 @@
+# ============================================================================
+# KAMINOCLONE - CONFIGURAÇÃO SICREDI
+# ============================================================================
+# 
+# Este arquivo contém as configurações da integração com o Sicredi.
+# Em produção, use variáveis de ambiente ou Vault para as credenciais.
+#
+# ============================================================================
+
+# Ambiente (sandbox ou production)
+environment: sandbox
+
+# URLs
+urls:
+  sandbox:
+    auth: "https://api-parceiro.sicredi.com.br/sb/auth/openapi/token"
+    api: "https://api-parceiro.sicredi.com.br/sb/cobranca/boleto/v1"
+  production:
+    auth: "https://api-parceiro.sicredi.com.br/auth/openapi/token"
+    api: "https://api-parceiro.sicredi.com.br/cobranca/boleto/v1"
+
+# Credenciais (usar variáveis de ambiente em produção)
+credentials:
+  # x-api-key do Portal do Desenvolvedor
+  api_key: "${SICREDI_API_KEY}"
+  
+  # Username = CodigoBeneficiario + CodigoCooperativa
+  username: "${SICREDI_USERNAME}"
+  
+  # Código de Acesso gerado no Internet Banking
+  password: "${SICREDI_PASSWORD}"
+
+# Dados do Beneficiário
+beneficiario:
+  # Código da Cooperativa (4 dígitos)
+  cooperativa: "${SICREDI_COOPERATIVA}"
+  
+  # Código do Posto/Agência (2 dígitos)
+  posto: "${SICREDI_POSTO}"
+  
+  # Código do Beneficiário (5 dígitos)
+  codigo: "${SICREDI_CODIGO_BENEFICIARIO}"
+
+# Configurações de boleto padrão
+boleto:
+  # Tipo de cobrança padrão: NORMAL ou HIBRIDO
+  tipo_cobranca_padrao: "HIBRIDO"
+  
+  # Espécie de documento padrão
+  especie_documento_padrao: "DUPLICATA_SERVICO_INDICACAO"
+  
+  # Dias de validade do QRCode após vencimento (para boleto híbrido)
+  validade_apos_vencimento: 30
+  
+  # Configurações de juros e multa padrão
+  juros:
+    tipo: "PERCENTUAL"  # VALOR ou PERCENTUAL
+    valor: 0.033        # 0.033% ao dia = ~1% ao mês
+  multa:
+    percentual: 2.0     # 2%
+
+# Configurações de timeout e retry
+http:
+  timeout_seconds: 30
+  max_retries: 3
+  retry_delay_ms: 1000
+  retry_backoff_multiplier: 2
+
+# Configurações de autenticação
+auth:
+  # Margem de segurança para renovação do token (segundos)
+  token_refresh_margin_seconds: 60
+  
+  # Contexto de autenticação
+  context: "COBRANCA"
+  scope: "cobranca"
+
+# Configurações de logging
+logging:
+  # Mascarar dados sensíveis nos logs
+  mask_sensitive_data: true
+  
+  # Campos a mascarar
+  sensitive_fields:
+    - "password"
+    - "api_key"
+    - "access_token"
+    - "refresh_token"
+    - "documento"
+    - "cpf"
+    - "cnpj"
+
+# Configurações de métricas
+metrics:
+  enabled: true
+  prefix: "sicredi"
+  labels:
+    - "endpoint"
+    - "method"
+    - "status"
+
+# Valores para ambiente Sandbox (homologação)
+sandbox_defaults:
+  username: "123456789"
+  password: "teste123"
+  cooperativa: "6789"
+  posto: "03"
+  codigo_beneficiario: "12345"

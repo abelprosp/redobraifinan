@@ -1,0 +1,743 @@
+# ============================================================================
+# KAMINOCLONE - DOCKER COMPOSE (DESENVOLVIMENTO/STAGING)
+# Versão: 1.0.0
+# Descrição: Stack completa para ambiente de desenvolvimento
+# ============================================================================
+
+# Nota: 'version' foi removido (obsoleto no Docker Compose v2+)
+
+# ============================================================================
+# NETWORKS
+# ============================================================================
+networks:
+  kamino-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+  kamino-internal:
+    driver: bridge
+    internal: true
+
+# ============================================================================
+# VOLUMES
+# ============================================================================
+volumes:
+  postgres-data:
+  clickhouse-data:
+  redis-data:
+  kafka-data:
+  zookeeper-data:
+  vault-data:
+  prometheus-data:
+  grafana-data:
+
+# ============================================================================
+# SERVICES
+# ============================================================================
+services:
+  # ==========================================================================
+  # MESSAGE BROKER - ZOOKEEPER
+  # ==========================================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: kamino-zookeeper
+    hostname: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 5
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_MAX_CLIENT_CNXNS: 100
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - ./config/zookeeper/log4j.properties:/etc/kafka/log4j.properties
+    networks:
+      - kamino-internal
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ==========================================================================
+  # MESSAGE BROKER - KAFKA
+  # ==========================================================================
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kamino-kafka
+    hostname: kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      
+      # Listeners
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      
+      # Configurações de performance
+      KAFKA_NUM_PARTITIONS: 12
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      
+      # Retenção
+      KAFKA_LOG_RETENTION_HOURS: 168  # 7 dias
+      KAFKA_LOG_RETENTION_BYTES: 10737418240  # 10GB
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824  # 1GB
+      
+      # Compressão
+      KAFKA_COMPRESSION_TYPE: lz4
+      
+      # Configurações de rede
+      KAFKA_MESSAGE_MAX_BYTES: 10485760  # 10MB
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 10485760
+      
+      # Auto create topics
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      
+      # JMX para monitoramento
+      KAFKA_JMX_PORT: 9999
+      KAFKA_JMX_HOSTNAME: localhost
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - kamino-network
+      - kamino-internal
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # ==========================================================================
+  # KAFKA UI
+  # ==========================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kamino-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: kamino-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      DYNAMIC_CONFIG_ENABLED: "true"
+    networks:
+      - kamino-network
+      - kamino-internal
+
+  # ==========================================================================
+  # KAFKA INIT (CREATE TOPICS)
+  # ==========================================================================
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kamino-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      echo 'Waiting for Kafka to be ready...'
+      sleep 10
+      
+      # Tópicos de transações
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic transactions.events --partitions 12 --replication-factor 1 --config retention.ms=604800000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic transactions.created --partitions 12 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic transactions.completed --partitions 12 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic transactions.failed --partitions 6 --replication-factor 1
+      
+      # Tópicos de pagamentos
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic payments.intents --partitions 12 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic payments.processed --partitions 12 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic payments.reconciliation --partitions 6 --replication-factor 1
+      
+      # Tópicos de cartões
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic cards.events --partitions 6 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic cards.authorizations --partitions 12 --replication-factor 1
+      
+      # Tópicos de contas
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic accounts.events --partitions 6 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic accounts.balance-updates --partitions 12 --replication-factor 1
+      
+      # Tópicos de notificações
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic notifications.outbound --partitions 6 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic notifications.push --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic notifications.email --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic notifications.sms --partitions 3 --replication-factor 1
+      
+      # Tópicos de webhooks
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic webhooks.inbound --partitions 6 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic webhooks.outbound --partitions 6 --replication-factor 1
+      
+      # Tópicos de fraude
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic fraud.events --partitions 6 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic fraud.decisions --partitions 6 --replication-factor 1
+      
+      # Tópicos de auditoria (alta retenção)
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic audit.events --partitions 12 --replication-factor 1 --config retention.ms=2592000000
+      
+      # Dead letter queues
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic dlq.transactions --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic dlq.payments --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic dlq.cards --partitions 3 --replication-factor 1
+      
+      echo 'All topics created successfully!'
+      kafka-topics --bootstrap-server kafka:29092 --list
+      "
+    networks:
+      - kamino-internal
+
+  # ==========================================================================
+  # DATABASE - POSTGRESQL + TIMESCALEDB
+  # ==========================================================================
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: kamino-postgres
+    hostname: postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kamino}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kamino_secure_password}
+      POSTGRES_DB: ${POSTGRES_DB:-kamino}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=en_US.UTF-8 --lc-ctype=en_US.UTF-8"
+      
+      # Performance
+      POSTGRES_MAX_CONNECTIONS: 200
+      POSTGRES_SHARED_BUFFERS: 512MB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 1536MB
+      POSTGRES_MAINTENANCE_WORK_MEM: 128MB
+      POSTGRES_CHECKPOINT_COMPLETION_TARGET: 0.9
+      POSTGRES_WAL_BUFFERS: 16MB
+      POSTGRES_DEFAULT_STATISTICS_TARGET: 100
+      POSTGRES_RANDOM_PAGE_COST: 1.1
+      POSTGRES_EFFECTIVE_IO_CONCURRENCY: 200
+      POSTGRES_WORK_MEM: 4MB
+      POSTGRES_MIN_WAL_SIZE: 1GB
+      POSTGRES_MAX_WAL_SIZE: 4GB
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./database/seeds:/docker-entrypoint-initdb.d/seeds:ro
+      - ./config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    networks:
+      - kamino-network
+      - kamino-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kamino} -d ${POSTGRES_DB:-kamino}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # ==========================================================================
+  # DATABASE - CLICKHOUSE (ANALYTICS)
+  # ==========================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: kamino-clickhouse
+    hostname: clickhouse
+    restart: unless-stopped
+    ports:
+      - "8123:8123"   # HTTP
+      - "9000:9000"   # Native
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-kamino}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-kamino_analytics}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      CLICKHOUSE_DB: kamino_analytics
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./analytics/clickhouse:/docker-entrypoint-initdb.d:ro
+      - ./config/clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
+      - ./config/clickhouse/users.xml:/etc/clickhouse-server/users.d/custom.xml:ro
+    networks:
+      - kamino-network
+      - kamino-internal
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # ==========================================================================
+  # CACHE - REDIS CLUSTER
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: kamino-redis
+    hostname: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --tcp-keepalive 300
+      --timeout 0
+      --requirepass ${REDIS_PASSWORD:-redis_secure_password}
+    volumes:
+      - redis-data:/data
+    networks:
+      - kamino-network
+      - kamino-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secure_password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  # ==========================================================================
+  # SECRETS MANAGEMENT - HASHICORP VAULT
+  # ==========================================================================
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: kamino-vault
+    hostname: vault
+    restart: unless-stopped
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:-kamino-dev-token}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault-data:/vault/data
+      - ./config/vault:/vault/config:ro
+    networks:
+      - kamino-network
+      - kamino-internal
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # API GATEWAY - KONG
+  # ==========================================================================
+  kong-database:
+    image: postgres:15-alpine
+    container_name: kamino-kong-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kong_password
+      POSTGRES_DB: kong
+    volumes:
+      - ./data/kong-db:/var/lib/postgresql/data
+    networks:
+      - kamino-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kong"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kong-migrations:
+    image: kong:3.4
+    container_name: kamino-kong-migrations
+    command: kong migrations bootstrap
+    depends_on:
+      kong-database:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong_password
+      KONG_PG_DATABASE: kong
+    networks:
+      - kamino-internal
+    restart: on-failure
+
+  kong:
+    image: kong:3.4
+    container_name: kamino-kong
+    hostname: kong
+    restart: unless-stopped
+    depends_on:
+      kong-migrations:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"   # Proxy
+      - "8443:8443"   # Proxy SSL
+      - "8001:8001"   # Admin API
+      - "8444:8444"   # Admin SSL
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong_password
+      KONG_PG_DATABASE: kong
+      
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
+      
+      # Plugins
+      KONG_PLUGINS: bundled,rate-limiting,cors,jwt,request-transformer
+      
+      # DNS
+      KONG_DNS_RESOLVER: 127.0.0.11
+    networks:
+      - kamino-network
+      - kamino-internal
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ==========================================================================
+  # KONG ADMIN UI (KONGA)
+  # ==========================================================================
+  konga:
+    image: pantsel/konga:latest
+    container_name: kamino-konga
+    restart: unless-stopped
+    depends_on:
+      - kong
+    ports:
+      - "1337:1337"
+    environment:
+      NODE_ENV: development
+      TOKEN_SECRET: ${KONGA_TOKEN_SECRET:-kamino-konga-secret}
+    networks:
+      - kamino-network
+      - kamino-internal
+
+  # ==========================================================================
+  # OBSERVABILITY - PROMETHEUS
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: kamino-prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    volumes:
+      - prometheus-data:/prometheus
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/alerts:/etc/prometheus/alerts:ro
+    networks:
+      - kamino-network
+      - kamino-internal
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # OBSERVABILITY - GRAFANA
+  # ==========================================================================
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: kamino-grafana
+    hostname: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource,grafana-piechart-panel
+      GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./analytics/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - kamino-network
+    depends_on:
+      - prometheus
+      - clickhouse
+
+  # ==========================================================================
+  # OBSERVABILITY - ALERTMANAGER
+  # ==========================================================================
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: kamino-alertmanager
+    hostname: alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - kamino-network
+      - kamino-internal
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+
+  # ==========================================================================
+  # SAMPLE SERVICES (PLACEHOLDERS)
+  # ==========================================================================
+  
+  # Ledger Service (Go)
+  ledger-service:
+    build:
+      context: ./services/ledger-service
+      dockerfile: Dockerfile
+    container_name: kamino-ledger-service
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      APP_ENV: development
+      APP_PORT: 8080
+      
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-kamino}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-kamino_secure_password}
+      DB_NAME: ${POSTGRES_DB:-kamino}
+      DB_SSLMODE: disable
+      DB_MAX_CONNECTIONS: 25
+      
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secure_password}
+      
+      # Kafka
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: ledger-service
+      
+      # Vault
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-kamino-dev-token}
+      
+      # Observability
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - kamino-network
+      - kamino-internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - services
+
+  # Payment Service (Go)
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    container_name: kamino-payment-service
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    environment:
+      APP_ENV: development
+      APP_PORT: 8080
+      
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-kamino}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-kamino_secure_password}
+      DB_NAME: ${POSTGRES_DB:-kamino}
+      
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secure_password}
+      
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: payment-service
+      
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-kamino-dev-token}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - kamino-network
+      - kamino-internal
+    profiles:
+      - services
+
+  # Card Service (Rust)
+  card-service:
+    build:
+      context: ./services/card-service
+      dockerfile: Dockerfile
+    container_name: kamino-card-service
+    restart: unless-stopped
+    ports:
+      - "8083:8080"
+    environment:
+      RUST_LOG: info
+      APP_PORT: 8080
+      
+      DATABASE_URL: postgres://${POSTGRES_USER:-kamino}:${POSTGRES_PASSWORD:-kamino_secure_password}@postgres:5432/${POSTGRES_DB:-kamino}
+      
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
+      
+      KAFKA_BROKERS: kafka:29092
+      
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-kamino-dev-token}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - kamino-network
+      - kamino-internal
+    profiles:
+      - services
+
+  # Notification Service (Node.js)
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: kamino-notification-service
+    restart: unless-stopped
+    ports:
+      - "8084:8080"
+    environment:
+      NODE_ENV: development
+      PORT: 8080
+      
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secure_password}
+      
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: notification-service
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - kamino-network
+      - kamino-internal
+    profiles:
+      - services
+
+  # ==========================================================================
+  # BOLETO WEBHOOK SERVICE (Go)
+  # Webhook para consulta de boletos por telefone e senha
+  # ==========================================================================
+  boleto-webhook:
+    build:
+      context: ./services/boleto-webhook
+      dockerfile: Dockerfile
+    container_name: kamino-boleto-webhook
+    restart: unless-stopped
+    ports:
+      - "8085:8081"
+    environment:
+      APP_ENV: development
+      WEBHOOK_PORT: 8081
+      
+      # Database
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-kamino}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kamino_secure_password}
+      POSTGRES_DB: ${POSTGRES_DB:-kamino}
+      POSTGRES_SSLMODE: disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - kamino-network
+      - kamino-internal
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - services
+      - webhook
+
+# ============================================================================
+# CONFIGS (EXTERNAL)
+# ============================================================================
+configs:
+  postgres_config:
+    file: ./config/postgres/postgresql.conf
+  prometheus_config:
+    file: ./config/prometheus/prometheus.yml
